@@ -1,0 +1,153 @@
+<!doctype html>
+<!--
+@license
+Copyright (c) 2015 The Polymer Project Authors. All rights reserved.
+This code may only be used under the BSD style license found at http://polymer.github.io/LICENSE.txt
+The complete set of authors may be found at http://polymer.github.io/AUTHORS.txt
+The complete set of contributors may be found at http://polymer.github.io/CONTRIBUTORS.txt
+Code distributed by Google as part of the polymer project is also
+subject to an additional IP rights grant found at http://polymer.github.io/PATENTS.txt
+-->
+<html>
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, minimum-scale=1.0, initial-scale=1.0, user-scalable=yes">
+
+    <script src="../../webcomponentsjs/webcomponents-lite.js"></script>
+    <script src="../../web-component-tester/browser.js"></script>
+    <script src="../../iron-test-helpers/test-helpers.js"></script>
+    <script src="../../iron-test-helpers/mock-interactions.js"></script>
+
+    <!-- Step 1: import the element to test -->
+    <link rel="import" href="../raml-schema-type.html">
+  </head>
+  <body>
+
+    <test-fixture id="basic">
+      <template>
+        <raml-schema-type></raml-schema-type>
+      </template>
+    </test-fixture>
+
+    <script>
+    function isObject(obj) {
+      return obj && obj === Object(obj) && !Array.isArray(obj);
+    }
+    function deepClone(obj) {
+      var clone;
+      if (Array.isArray(obj)) {
+        clone = [];
+        obj.forEach(function(item) {
+          clone.push(deepClone(item));
+        });
+      } else if (isObject(obj)) {
+        clone = {};
+        Object.keys(obj)
+        .forEach(function(key) {
+          clone[key] = deepClone(obj[key]);
+        });
+      } else {
+        clone = obj;
+      }
+      return clone;
+    }
+
+    /* global fixture, assert */
+    suite('JSON test', function() {
+      var schema;
+      suiteSetup(function() {
+        var baseUrl = location.href.substr(0, location.href.lastIndexOf('/') + 1);
+        return fetch(baseUrl + 'json-test.json')
+        .then(function(response) {
+          if (!response.ok) {
+            throw new Error('Unable to download test schema description');
+          }
+          return response.json();
+        })
+        .then(function(result) {
+          schema = result;
+        });
+      });
+
+      suite('_processDefinitions()', function() {
+        var element;
+        var object;
+        setup(function() {
+          element = fixture('basic');
+          object = element._schemaFromObject(deepClone(schema));
+        });
+
+        test('Creates a $schema proeprty', function() {
+          assert.typeOf(object.$schema, 'string');
+        });
+
+        test('Creates empty title proeprty', function() {
+          assert.strictEqual(object.title, '');
+        });
+
+        test('Creates empty description proeprty', function() {
+          assert.strictEqual(object.description, '');
+        });
+
+        test('Computes type property', function() {
+          assert.strictEqual(object.type, 'object');
+        });
+
+        test('Computes properties property', function() {
+          assert.notEqual(Object.keys(object.properties).length, 0);
+        });
+      });
+
+      suite('_computeSchemaProperty()', function() {
+        var element;
+        setup(function() {
+          element = fixture('basic');
+        });
+
+        test('Returns an object', function() {
+          var result = element._computeSchemaProperty('test');
+          assert.isTrue(isObject(result));
+        });
+
+        test('Returns an object with a type', function() {
+          var result = element._computeSchemaProperty('test');
+          assert.typeOf(result.type, 'string');
+        });
+
+        test('Computes example for a primitive', function() {
+          var result = element._computeSchemaProperty('test');
+          assert.equal(result.example, 'test');
+        });
+
+        test('Computes example for an array', function() {
+          var _obj = ['item'];
+          var result = element._computeSchemaProperty(_obj);
+          assert.equal(result.example, JSON.stringify(_obj));
+        });
+
+        test('Computes example for an array', function() {
+          var _obj = {'a': 'b'};
+          var result = element._computeSchemaProperty(_obj);
+          assert.equal(result.example, JSON.stringify(_obj));
+        });
+
+        test('Computes items for array type', function() {
+          var result = element._computeSchemaProperty([{
+            key: 'drive#parentReference',
+            test: '0ADpy9PK_RiBOUk9PVA'
+          }]);
+          assert.typeOf(result.items, 'object');
+          assert.typeOf(result.items.type, 'string');
+        });
+
+        test('Computes properties for an object', function() {
+          var _obj = {'a': 'b'};
+          var result = element._computeSchemaProperty(_obj);
+          assert.isTrue(isObject(result.properties));
+        });
+      });
+    });
+    </script>
+
+  </body>
+</html>

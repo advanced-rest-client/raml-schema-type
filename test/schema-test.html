@@ -1,0 +1,265 @@
+<!doctype html>
+<!--
+@license
+Copyright (c) 2015 The Polymer Project Authors. All rights reserved.
+This code may only be used under the BSD style license found at http://polymer.github.io/LICENSE.txt
+The complete set of authors may be found at http://polymer.github.io/AUTHORS.txt
+The complete set of contributors may be found at http://polymer.github.io/CONTRIBUTORS.txt
+Code distributed by Google as part of the polymer project is also
+subject to an additional IP rights grant found at http://polymer.github.io/PATENTS.txt
+-->
+<html>
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, minimum-scale=1.0, initial-scale=1.0, user-scalable=yes">
+
+    <script src="../../webcomponentsjs/webcomponents-lite.js"></script>
+    <script src="../../web-component-tester/browser.js"></script>
+    <script src="../../iron-test-helpers/test-helpers.js"></script>
+    <script src="../../iron-test-helpers/mock-interactions.js"></script>
+
+    <!-- Step 1: import the element to test -->
+    <link rel="import" href="../raml-schema-type.html">
+  </head>
+  <body>
+
+    <test-fixture id="basic">
+      <template>
+        <raml-schema-type></raml-schema-type>
+      </template>
+    </test-fixture>
+
+    <script>
+    function isObject(obj) {
+      return obj && obj === Object(obj) && !Array.isArray(obj);
+    }
+    function deepClone(obj) {
+      var clone;
+      if (Array.isArray(obj)) {
+        clone = [];
+        obj.forEach(function(item) {
+          clone.push(deepClone(item));
+        });
+      } else if (isObject(obj)) {
+        clone = {};
+        Object.keys(obj)
+        .forEach(function(key) {
+          clone[key] = deepClone(obj[key]);
+        });
+      } else {
+        clone = obj;
+      }
+      return clone;
+    }
+
+    /* global fixture, assert */
+    suite('Schema test', function() {
+      var schema;
+      suiteSetup(function() {
+        var baseUrl = location.href.substr(0, location.href.lastIndexOf('/') + 1);
+        return fetch(baseUrl + 'schema-test.json')
+        .then(function(response) {
+          if (!response.ok) {
+            throw new Error('Unable to download test schema description');
+          }
+          return response.json();
+        })
+        .then(function(result) {
+          schema = result;
+        });
+      });
+
+      suite('_processDefinitions()', function() {
+        var element;
+        var types;
+        setup(function() {
+          element = fixture('basic');
+          element.types = {};
+          element._processDefinitions(deepClone(schema));
+          types = element.types;
+        });
+
+        test('Computed 3 types', function() {
+          assert.lengthOf(Object.keys(element.types), 3);
+        });
+
+        test('Labsels type has computed items type', function() {
+          assert.typeOf(types.Labels.items.type, 'object');
+        });
+
+        test('Labsels items inheritate after Label', function() {
+          assert.deepEqual(types.Labels.items.type, types.Label);
+        });
+
+        test('Labsel first propery has unresolved type', function() {
+          assert.equal(types.Label.properties[0].type, 'Undefined');
+        });
+
+        test('Pattern facet is resolved', function() {
+          assert.equal(types.Label.properties[1].pattern, '[a-zA-Z]');
+        });
+
+        test('minItems facet is resolved', function() {
+          assert.strictEqual(types.Labels.minItems, 1);
+        });
+
+        test('uniqueItems facet is resolved', function() {
+          assert.isTrue(types.Labels.uniqueItems);
+        });
+
+        test('required facet is resolved', function() {
+          assert.isTrue(types.Labels.uniqueItems);
+        });
+      });
+
+      suite('_processMainData()', function() {
+        var element;
+        var type;
+        setup(function() {
+          element = fixture('basic');
+          element.types = {};
+          element._processMainData(deepClone(schema));
+          type = element.types[element.mainTypeName];
+        });
+
+        test('Type name is computed', function() {
+          assert.equal(type.name, 'Product');
+        });
+
+        test('Type description is computed', function() {
+          assert.equal(type.description, 'A product from Acme catalog');
+        });
+
+        test('Property type is computed', function() {
+          assert.equal(type.properties[2].type, 'number');
+        });
+
+        test('The minimum facet is resolved', function() {
+          assert.strictEqual(type.properties[2].minimum, 0);
+        });
+
+        test('Array items have simplified type definition', function() {
+          assert.equal(type.properties[3].items, 'string');
+        });
+
+        test('Undefined type is not resolved', function() {
+          assert.equal(type.properties[4].type, 'Address');
+        });
+
+        test('$schema is undefined', function() {
+          assert.isUndefined(type.$schema);
+        });
+      });
+
+      suite('transform()', function() {
+        var element;
+        var type;
+        setup(function() {
+          element = fixture('basic');
+          var clone = deepClone(schema);
+          type = element.transform(clone);
+        });
+
+        test('Dependencies are resolved', function() {
+          assert.equal(type.properties[4].type, 'object', 'Type is object');
+          assert.typeOf(type.properties[4].properties, 'array');
+        });
+
+        test('JSON schema file object is resolved', function() {
+          assert.typeOf(type.properties[5].fileTypes, 'array');
+        });
+
+        test('anyOf is resolved', function() {
+          assert.lengthOf(type.properties[5].fileTypes, 2);
+        });
+      });
+
+      suite('_ramlForm()', function() {
+        var element;
+        setup(function() {
+          element = fixture('basic');
+        });
+
+        test('Primitives are not processed', function() {
+          assert.strictEqual(element._ramlForm(true), true);
+          assert.strictEqual(element._ramlForm(null), null);
+          assert.strictEqual(element._ramlForm(false), false);
+          assert.strictEqual(element._ramlForm(1), 1);
+          assert.strictEqual(element._ramlForm('test'), 'test');
+        });
+
+        test('Transforms title to name property', function() {
+          var obj = {
+            title: 'test-title'
+          };
+          assert.strictEqual(element._ramlForm(obj).name, 'test-title');
+        });
+
+        test('Transforms properties into array of properties', function() {
+          var obj = {
+            properties: {
+              id: {
+                description: 'The unique identifier for a product',
+                type: 'integer',
+                key: 'id'
+              }
+            }
+          };
+          var result = element._ramlForm(obj, undefined, 'properties');
+          assert.typeOf(result, 'array');
+        });
+      });
+
+      suite('_mergeExcludeDusplicates()', function() {
+        var element;
+        var arr1;
+        var arr2;
+        setup(function() {
+          element = fixture('basic');
+          arr1 = [{
+            key: 'test',
+            value: 'any-1'
+          }];
+
+          arr2 = [{
+            key: 'test-2',
+            value: 'any-2'
+          }];
+        });
+
+        test('Merges arrays with unique keys', function() {
+          var result = element._mergeExcludeDusplicates(arr1, arr2);
+          assert.typeOf(result, 'array', 'Result is an array');
+          assert.lengthOf(result, 2, 'Result has 2 items');
+        });
+
+        test('Merges arrays with not unique keys in source array', function() {
+          arr2.push({
+            key: 'test',
+            value: 'error'
+          });
+          var result = element._mergeExcludeDusplicates(arr1, arr2);
+          assert.lengthOf(result, 2, 'Result has 2 items');
+          assert.equal(result[0].value, 'any-1');
+        });
+
+        test('Merges arrays with not unique keys in dest array', function() {
+          arr1.push({
+            key: 'test-2',
+            value: 'error'
+          });
+          var result = element._mergeExcludeDusplicates(arr1, arr2);
+          assert.lengthOf(result, 2, 'Result has 2 items');
+          assert.equal(result[0].value, 'any-1');
+        });
+
+        test('Merging result preserves order', function() {
+          var result = element._mergeExcludeDusplicates(arr1, arr2);
+          assert.equal(result[0].key, 'test');
+        });
+      });
+    });
+    </script>
+
+  </body>
+</html>

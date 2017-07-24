@@ -1,0 +1,104 @@
+<!doctype html>
+<!--
+@license
+Copyright (c) 2015 The Polymer Project Authors. All rights reserved.
+This code may only be used under the BSD style license found at http://polymer.github.io/LICENSE.txt
+The complete set of authors may be found at http://polymer.github.io/AUTHORS.txt
+The complete set of contributors may be found at http://polymer.github.io/CONTRIBUTORS.txt
+Code distributed by Google as part of the polymer project is also
+subject to an additional IP rights grant found at http://polymer.github.io/PATENTS.txt
+-->
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge,chrome=1">
+  <meta name="viewport" content="width=device-width, minimum-scale=1.0, initial-scale=1, user-scalable=yes">
+
+  <title>raml-schema-type demo</title>
+
+  <script src="../../webcomponentsjs/webcomponents-lite.js"></script>
+
+  <link rel="import" href="../../iron-demo-helpers/demo-pages-shared-styles.html">
+  <link rel="import" href="../../iron-demo-helpers/demo-snippet.html">
+
+  <link rel="import" href="../raml-schema-type.html">
+
+  <style is="custom-style" include="demo-pages-shared-styles">
+
+    .vertical-section-container {
+      max-width: 600px;
+    }
+
+    pre {
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+  </style>
+</head>
+<body unresolved>
+  <div class="vertical-section-container centered">
+    <h3>Generating RAML type from schema</h3>
+    <demo-snippet data-example="schema-example1.json">
+      <template is="dom-bind" id="ex1">
+        <raml-schema-type type="{{type}}"></raml-schema-type>
+        <pre>[[display(type)]]</pre>
+        <script>
+        (function(scope) {
+          scope.display = function(type) {
+            if (!type) {
+              return;
+            }
+            return JSON.stringify(type, null, 2);
+          };
+        })(document.getElementById('ex1'));
+        </script>
+      </template>
+    </demo-snippet>
+
+    <h3>Generating RAML type from a JavaScript object</h3>
+    <demo-snippet data-example="json-example1.json">
+      <template is="dom-bind" id="ex2">
+        <raml-schema-type type="{{type}}"></raml-schema-type>
+        <pre>[[display(type)]]</pre>
+        <script>
+        (function(scope) {
+          scope.display = function(type) {
+            if (!type) {
+              return;
+            }
+            return JSON.stringify(type, null, 2);
+          };
+        })(document.getElementById('ex2'));
+        </script>
+      </template>
+    </demo-snippet>
+  </div>
+
+  <script>
+  (function() {
+    function getExample(node) {
+      var file = node.dataset.example;
+      fetch(file)
+      .then(function(response) {
+        if (!response.ok) {
+          console.error('Unablle to download example file.');
+          return;
+        }
+        return response.text();
+      })
+      .then(function(text) {
+        if (!text) {
+          return;
+        }
+        var element = node.queryAllEffectiveChildren('raml-schema-type')[0];
+        element.schema = text;
+      });
+    }
+    var nodes = document.querySelectorAll('[data-example]');
+    for (var i = 0, len = nodes.length; i < len; i++) {
+      getExample(nodes[i]);
+    }
+  })();
+  </script>
+</body>
+</html>

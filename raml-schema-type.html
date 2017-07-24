@@ -1,0 +1,813 @@
+<!--
+@license
+Copyright 2016 The Advanced REST client authors <arc@mulesoft.com>
+Licensed under the Apache License, Version 2.0 (the "License"); you may not
+use this file except in compliance with the License. You may obtain a copy of
+the License at
+http://www.apache.org/licenses/LICENSE-2.0
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+License for the specific language governing permissions and limitations under
+the License.
+-->
+<link rel="import" href="../polymer/polymer.html">
+<!--
+`<schema-to-type>` computes RAML data type from JSON schema definition.
+
+It is mainly based on [ramldt2jsonschema](https://github.com/raml-org/ramldt2jsonschema/blob/master/src/js2dt.js) library.
+All credits to the author of the library.
+
+It also contains fragments of code from ARC's `raml2obj` library.
+
+@group RAML Elements
+@element raml-schema-type
+@demo demo/index.html
+-->
+<script>
+(function() {
+  var dateConstants = {
+    RFC3339: 'rfc3339',
+    RFC2616: 'rfc2616',
+    dateOnlyPattern: '^(\\d{4})-(\\d{2})-(\\d{2})$',
+    timeOnlyPattern: '^(\\d{2})(:)(\\d{2})(:)(\\d{2})(\\.\\d+)?$',
+    dateTimeOnlyPattern: '^(\\d{4})-(\\d{2})-(\\d{2})T(\\d{2})(:)' +
+      '(\\d{2})(:)(\\d{2})(\\.\\d+)?$',
+    RFC3339DatetimePattern: '^(\\d{4})-(\\d{2})-(\\d{2})T(\\d{2})(:)(\\d{2})' +
+      '(:)(\\d{2})(\\.\\d+)?(Z|([+-])(\\d{2})(:)?(\\d{2}))$',
+    RFC2616DatetimePattern: '(?:(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun), ' +
+      '(?:[0-2][0-9]|3[01]) ' +
+      '(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) ' +
+      '\\d{4} (?:[01][0-9]|2[0-3]):[012345][0-9]:[012345][0-9] ' +
+      'GMT|(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday), ' +
+      '(?:[0-2][0-9]|3[01])-(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)' +
+      '-\\d{2} (?:[01][0-9]|2[0-3]):[012345][0-9]:[012345][0-9] ' +
+      'GMT|(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun) ' +
+      '(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) ' +
+      '(?:[ 1-2][0-9]|3[01]) (?:[01][0-9]|2[0-3]):[012345][0-9]:[012345][0-9] \\d{4})'
+  };
+
+  Polymer({
+    is: 'raml-schema-type',
+    /**
+     * Fired when the RAML type has been generated form the schema.
+     *
+     * @event raml-schema-ready
+     * @property {Object} type Generated type.
+     */
+    properties: {
+      /**
+       * A schema to use. It can be set as a JS object. Then the JSON won't
+       * be parsed internally.
+       */
+      schema: String,
+      /**
+       * Name of RAML data type to hold converted data.
+       * It can be accessed via
+       * `<schema-to-type>.types[<schema-to-type>.mainTypeName]`.
+       */
+      mainTypeName: {
+        type: String,
+        value: 'MainType'
+      },
+      /**
+       * List of types detected in the schema.
+       */
+      types: Array,
+      /**
+       * An object transformed from the schema.
+       */
+      type: {
+        type: Object,
+        notify: true,
+        readOnly: true
+      }
+    },
+
+    observers: [
+      '_schemaChanged(schema)'
+    ],
+    // Computes RAML type from the schema when it's value change.
+    _schemaChanged: function(schema) {
+      if (typeof schema === 'string') {
+        try {
+          schema = JSON.parse(schema);
+        } catch (e) {
+          return this.fire('error', {
+            message: 'Unable to parse schema string.'
+          });
+        }
+      }
+      if (!schema.$schema) {
+        schema = this._schemaFromObject(schema);
+      }
+      var type = this.transform(schema);
+      this._setType(type);
+      this.fire('raml-schema-ready', {
+        type: type
+      });
+    },
+    /**
+     * Transforms a JavaScript object (JSON schema) to a RAML type.
+     * @param {Object} schema Parsed schema definition.
+     * @return {Object} RAML definition.
+     */
+    transform: function(schema) {
+      this.types = {};
+      this._setType(undefined);
+      this._processDefinitions(schema);
+      this._processMainData(schema);
+      return this.types[this.mainTypeName];
+    },
+    /**
+     * Processses definitions, delete them from data and returns types.
+     * @param {Object} schema Schema definition.
+     * @return {Object}
+     */
+    _processDefinitions: function(schema) {
+      var defsData = this._translateDefinitions(schema.definitions);
+      delete schema.definitions;
+      this.types = this._updateObjWith(this.types, defsData);
+    },
+    /**
+     * Process main data and save result in `types`.
+     *
+     * @return {Object} Types.
+     */
+    _processMainData: function(schema) {
+      delete schema.$schema;
+      this.types[this.mainTypeName] = this._ramlForm(schema, []);
+    },
+    /**
+     * Processes definitions the same way main type is processed
+     * (using ramlForm).
+     *
+     * @param {Object} definitions - JSON 'definitions' object.
+     * @return {Object}
+     */
+    _translateDefinitions: function(definitions) {
+      var defsData = {};
+      if (!definitions) {
+        return defsData;
+      }
+      for (var key in definitions) {
+        defsData[this._capitalize(key)] = this._ramlForm(definitions[key], []);
+      }
+      this._updateTypesReferences(defsData, defsData);
+      return defsData;
+    },
+    /**
+     * Convert JSON schema to a library with RAML data type.
+     *
+     * @param {Object} data - Data to be converted.
+     * @param {Array} reqStack - Stack of required properties.
+     * @param {?String} prop - Property name nested objects of which are processed.
+     * @return {Object}
+     */
+    _ramlForm: function(data, reqStack, prop) {
+      if (!(data instanceof Object)) {
+        return data;
+      }
+      var isObj = data.type === 'object';
+      if (isObj) {
+        reqStack.push({
+          'reqs': data.required || [],
+          'props': Object.keys(data.properties || {})
+        });
+        delete data.required;
+      }
+
+      var combsKey = this._getCombinationsKey(data);
+      if (combsKey && data.type) {
+        data = this._setCombinationsTypes(data, combsKey);
+      }
+
+      if (this._isFileType(data)) {
+        data = this._convertFileType(data);
+      }
+
+      var updateWith = this._processNested(data, reqStack);
+      data = this._updateObjWith(data, updateWith);
+
+      if ('title' in data) {
+        data.name = data.title || this.mainTypeName;
+        delete data.title;
+      }
+
+      if (isObj) {
+        reqStack.pop();
+      }
+      if (typeof data.required === 'undefined' && reqStack) {
+        var lastEl = reqStack[reqStack.length - 1];
+        if (lastEl && prop) {
+          if (lastEl.props.indexOf(prop) > -1) {
+            data.required = lastEl.reqs.indexOf(prop) > -1;
+          }
+        }
+      }
+      if (data.$ref) {
+        data = this._convertRef(data);
+      } else if (data.type) {
+        data = this._convertType(data);
+        data = this._convertDateType(data);
+      }
+      if (combsKey) {
+        data = this._processCombinations(data, combsKey, prop);
+      }
+
+      if (prop && prop === 'properties') {
+        data = this._objectToArray(data);
+        data = this._makePropertiesConsistent(data);
+      }
+      return data;
+    },
+    /**
+     * Call `ramlForm` for each element of array.
+     *
+     * @param  {Array} arr
+     * @param  {Array} reqStack - Stack of required properties.
+     * @returns  {Array}
+     */
+    _processArray: function(arr, reqStack) {
+      var accum = [];
+      arr.forEach(function(el) {
+        accum.push(this._ramlForm(el, reqStack));
+      }, this);
+      return accum;
+    },
+    /**
+     * Call `ramlForm` for all nested objects.
+     *
+     * @param  {Object} data
+     * @param  {Array} reqStack - Stack of required properties.
+     * @returns  {Object}
+     */
+    _processNested: function(data, reqStack) {
+      var updateWith = {};
+      for (var key in data) {
+        var val = data[key];
+
+        if (val instanceof Array) {
+          updateWith[key] = this._processArray(val, reqStack);
+          continue;
+        }
+
+        if (val instanceof Object) {
+          updateWith[key] = this._ramlForm(val, reqStack, key);
+          continue;
+        }
+      }
+      return updateWith;
+    },
+
+    _processCombinations: function(data, combsKey, prop) {
+      prop = prop ? this._capitalize(prop) : this.mainTypeName;
+      var combSchemas = data[combsKey];
+      var superTypes = [];
+      combSchemas.forEach(function(el, ind) {
+        var name = prop + 'ParentType' + ind.toString();
+        superTypes.push(name);
+        this.types[name] = el;
+      }, this);
+      delete data[combsKey];
+      data.type = this._getCombinationTypes(superTypes, combsKey);
+      return data;
+    },
+    /**
+     * Capitalize string.
+     *
+     * @param {String} str
+     * @return {string} Capitalized string.
+     */
+    _capitalize: function(str) {
+      return str[0].toUpperCase() + str.slice(1);
+    },
+
+    /**
+     * Merge second object into first one.
+     *
+     * @param  {Object} obj
+     * @param  {Object} upd
+     * @returns  {Object}
+     */
+    _updateObjWith: function(obj, upd) {
+      for (var key in upd) {
+        obj[key] = upd[key];
+      }
+      return obj;
+    },
+
+    /**
+     * @param {String} ref Reference content.
+     * @returns {Object|string} Returns type declaration or it's name if the
+     * type is not computed or missing.
+     */
+    _typFromRef: function(ref) {
+      var name = ref.replace(/^.*[\\\/]/, '');
+      name = this._capitalize(name);
+      var types = this.types;
+      if (!types) {
+        return name;
+      }
+      if (name in types) {
+        return types[name];
+      }
+      return name;
+    },
+    /**
+     * Infer RAML type name from file name
+     *
+     * @param  {string} fileName - File in which type is located.
+     * @returns  {string}
+     */
+    _inferRAMLTypeName: function(fileName) {
+      var cleanName = fileName.replace(/^.*[\\\/]/, '');
+      var filename = cleanName.split('.')[0];
+      return this._capitalize(filename);
+    },
+
+    /**
+     * Replace $ref in data with defined type name.
+     * Type presence in 'definitions' is not validated.
+     *
+     * @param {Object} data - Data containing $ref.
+     * @returns {Object}
+     */
+    _convertRef: function(data) {
+      var type = this._typFromRef(data.$ref);
+      data.type = type;
+      delete data.$ref;
+      if (typeof type === 'string') {
+        return data;
+      }
+      this._applyType(data, type);
+
+      return data;
+    },
+    /**
+     * Applies type definition to current property.
+     * This adds properties from a type declaration to current object respecting
+     * object's existing properties.
+     *
+     * For example `properties`, `items` from `obj` and `typedef` will be
+     * merged and inline properties overrides types properties.
+     *
+     * Examples are merged into one array.
+     *
+     * `obj`'s inline defined properties (description, enum, default) are preserved.
+     *
+     * @param {Object} obj Currently transformed object. Must be type
+     * declaration as a `property` or `item`.
+     * @param {Object} typedef Type definition to apply to the object.
+     * @return {Object} Transformed object.
+     */
+    _applyType: function(obj, typedef) {
+      var overrideProperties = {
+        description: obj.description,
+        enum: obj.enum,
+        default: obj.default,
+        schema: obj.schema,
+        name: obj.name
+      };
+      var mergeProperties = {
+        properties: obj.properties,
+        items: obj.items
+      };
+      obj = Object.assign(obj, typedef);
+      if (obj.type && Array.isArray(obj.type)) {
+        obj.type = obj.type[0];
+      }
+      Object.keys(mergeProperties).forEach(function(key) {
+        if (mergeProperties[key] === undefined) {
+          return;
+        }
+        if (!obj[key] || !obj[key].length) {
+          obj[key] = [];
+        }
+        obj[key] = this._mergeExcludeDusplicates(mergeProperties[key], obj[key]);
+      }, this);
+      if (overrideProperties.name === overrideProperties.displayName &&
+        obj.displayName !== overrideProperties.displayName) {
+        delete overrideProperties.displayName;
+      }
+      Object.keys(overrideProperties).forEach(function(key) {
+        if (overrideProperties[key] === undefined) {
+          return;
+        }
+        obj[key] = overrideProperties[key];
+      });
+    },
+
+    /**
+     * Merges two array and eliminates duplicates compared by `key` property.
+     *
+     * @param {Array} dest Destination array. `key`s from this array have priority
+     * over `source` array.
+     * @param {Array} source An array to marge items with `dest`. If the `key`
+     * property defined on an item of this array already exists in `dest` array
+     * then this item will be omitted.
+     * @return {Array} Merged both arrays. Note, that this will return an array
+     * event if both arguments are undefined.
+     */
+    _mergeExcludeDusplicates: function(dest, source) {
+      if (!dest || !dest.length) {
+        dest = [];
+      }
+      if (!source || !source.length) {
+        source = [];
+      }
+      for (var i = 0, len = source.length; i < len; i++) {
+        var addItem = source[i];
+        var addKey = addItem.key;
+        var exists = false;
+        for (var j = 0, jLen = dest.length; j < jLen; j++) {
+          if (dest[j].key === addKey) {
+            exists = true;
+            break;
+          }
+        }
+        if (!exists) {
+          dest.push(addItem);
+        }
+      }
+      return dest;
+    },
+
+    _getCombinationsKey: function(data) {
+      if (data.anyOf) {
+        return 'anyOf';
+      } else if (data.allOf) {
+        return 'allOf';
+      } else if (data.oneOf) {
+        return 'oneOf';
+      }
+    },
+
+    _setCombinationsTypes: function(data, combsKey) {
+      data[combsKey].forEach(function(el) {
+        if (!el.type) {
+          el.type = data.type;
+        }
+      });
+      return data;
+    },
+    /**
+     * Produces valid RAML type definition depending whether type is a union
+     * type or not.
+     */
+    _getCombinationTypes: function(types, combsKey) {
+      if (combsKey === 'allOf') {
+        return types;
+      } else if (combsKey === 'oneOf' || combsKey === 'anyOf') {
+        return types.join(' | ');
+      }
+    },
+
+    /**
+     * Change JSON date type of data to valid RAML date type.
+     *
+     * @param {Object} data
+     * @return {Object}
+     */
+    _convertDateType: function(data) {
+      if (!(data.type === 'string' && data.pattern)) {
+        return data;
+      }
+
+      var pattern = data.pattern;
+      delete data.pattern;
+      switch (pattern) {
+        case dateConstants.dateOnlyPattern:
+          data.type = 'date-only';
+          break;
+        case dateConstants.timeOnlyPattern:
+          data.type = 'time-only';
+          break;
+        case dateConstants.dateTimeOnlyPattern:
+          data.type = 'datetime-only';
+          break;
+        case dateConstants.RFC3339DatetimePattern:
+          data.type = 'datetime';
+          data.format = dateConstants.RFC3339;
+          break;
+        case dateConstants.RFC2616DatetimePattern:
+          data.type = 'datetime';
+          data.format = dateConstants.RFC2616;
+          break;
+        default:
+          data.pattern = pattern;
+      }
+      return data;
+    },
+
+    /**
+     * Change JSON types of data to valid RAML type.
+     * Performs simple conversions of types.
+     *
+     * @param  {Object} data
+     * @returns  {Object}
+     */
+    _convertType: function(data) {
+      if (data.type === 'null') {
+        data.type = 'nil';
+      }
+      return data;
+    },
+
+    /**
+     * Determine whether data is of RAML type `file`.
+     *
+     * @param  {Object} data
+     * @returns  {boolean}
+     */
+    _isFileType: function(data) {
+      return (!!(data.type === 'string' && data.media &&
+        data.media.binaryEncoding === 'binary'));
+    },
+
+    /**
+     * Change JSON type to RAML file type.
+     *
+     * @param  {Object} data
+     * @returns  {Object}
+     */
+    _convertFileType: function(data) {
+      data.type = 'file';
+      var anyOf = data.media.anyOf;
+      if (anyOf && anyOf.length > 0) {
+        data.fileTypes = [];
+        anyOf.forEach(function(el) {
+          if (el.mediaType) {
+            data.fileTypes.push(el.mediaType);
+          }
+        });
+        if (data.fileTypes.length < 1) {
+          delete data.fileTypes;
+        }
+      }
+      delete data.media;
+      return data;
+    },
+
+    _isObject: function(obj) {
+      return obj && obj === Object(obj) && !Array.isArray(obj);
+    },
+    /**
+     * Transforms object to an Array of objects.
+     * It moves object's keys to a `key` property of the item.
+     * @param {Object} obj Object to transform
+     * @return {Array} Transformed to an array object.
+     */
+    _objectToArray: function(obj) {
+      if (Array.isArray(obj)) {
+        return obj;
+      }
+      return Object.keys(obj).map(function(key) {
+        if (this._isObject(obj[key])) {
+          obj[key].key = key;
+        }
+        return obj[key];
+      }, this);
+    },
+    /**
+     * Uses portions of ARC's raml2obj library to produce similar output.
+     */
+    _makePropertiesConsistent: function(properties) {
+      for (var i = 0, len = properties.length; i < len; i++) {
+        var property = properties[i];
+        property = this._fillTypeInfo(property);
+        if (property.properties) {
+          property.properties = this._objectToArray(property.properties);
+          property.properties = this._makePropertiesConsistent(property.properties);
+        }
+        if (property.items) {
+          property.items = this._processItemProperty(property.items);
+        }
+        this._consistentExample(property);
+      }
+      return properties;
+    },
+    /**
+     * Updates a Type property that are required.
+     */
+    _fillTypeInfo: function(type) {
+      var key = type.key;
+      if (!type.name) {
+        type.name = key;
+      }
+      return type;
+    },
+    /**
+     * Propessess array type.
+     */
+    _processItemProperty: function(items) {
+      if (typeof items === 'string') {
+        return items;
+      }
+      if (Array.isArray(items)) {
+        if (items.length === 1) {
+          return items[0];
+        }
+        return items;
+      }
+      if (Object.keys(items).length === 1) {
+        return items.type || 'any';
+      }
+      return items;
+    },
+    /**
+     * Makes examples consistent by creating an array of examples with string
+     * example value.
+     *
+     * @param {Object} obj Currently transformed object. Probably a type
+     * declaration as a `property` or `item`.
+     * @return {Object} Transformed object.
+     */
+    _consistentExample: function(obj) {
+      if (obj.example) {
+        if (typeof obj.examples === 'undefined') {
+          obj.examples = [];
+        }
+        obj.examples.push(obj.example);
+        delete obj.example;
+      }
+      return obj;
+    },
+    /**
+     * Creates a JSON schema from a JavaScript object.
+     *
+     * @param {Object} schema A JavaScript object from which read properties.
+     * @return {Object} Generated schema.
+     */
+    _schemaFromObject: function(schema) {
+      var base = {
+        $schema: 'http://json-schema.org/draft-04/schema#',
+        title: '',
+        description: '',
+        type: this._detectObjectType(schema),
+        definitions: {},
+        properties: {},
+        required: []
+      };
+
+      Object.keys(schema)
+        .forEach(function(key) {
+          var type = this._computeSchemaProperty(schema[key]);
+          if (type) {
+            base.properties[key] = type;
+          }
+        }, this);
+      return base;
+    },
+    /**
+     * Computes a RAML type definition object (or rather its representation in
+     * JavaScript) for a property.
+     * This function recursively iterate over value's properties to generate full
+     * RAML type definition out of it.
+     * @param {any} value A value of currently iterated property of the javascript
+     * object.
+     * @return {Object} JavaScript representation of RAML Type
+     */
+    _computeSchemaProperty: function(value) {
+      var type = this._detectObjectType(value);
+      var result = {
+        type: type
+      };
+      if (type === 'array') {
+        result.items = this._computeSchemaProperty(value[0]);
+        result.example = JSON.stringify(value);
+      } else if (type === 'object') {
+        result.properties = {};
+        var anyKey = false;
+        Object.keys(value)
+        .forEach(function(key) {
+          var _n = Number(key);
+          if (_n === _n) {
+            anyKey = true;
+            result.properties = {};
+          }
+          if (anyKey) {
+            return;
+          }
+          result.properties[key] = this._computeSchemaProperty(value[key]);
+        }, this);
+        result.example = JSON.stringify(value);
+      } else {
+        result.example = value;
+        if (result.type === 'datetime') {
+          var reg = this._getDateRegex('RFC3339DatetimePattern',
+            dateConstants.RFC3339DatetimePattern);
+          if (reg.test(value)) {
+            result.format = dateConstants.RFC3339;
+          } else {
+            result.format = dateConstants.RFC2616;
+          }
+        }
+      }
+      return result;
+    },
+    /**
+     * TODO: detect dates and floats
+     * @param {any} obj Object to test for a type.
+     * @return {String} type of object.
+     */
+    _detectObjectType: function(obj) {
+      var type = typeof obj;
+      if (type !== 'object') {
+        if (type === 'string') {
+          var _test = Number(obj);
+          if (_test !== _test) {
+            return type;
+          }
+          _test = Number(obj);
+          if (_test === _test) {
+            return 'number';
+          }
+          var _dateType = this._testDateType(obj);
+          if (_dateType) {
+            return _dateType;
+          }
+        }
+        return type;
+      }
+      if (obj === null) {
+        return 'undefined';
+      }
+      if (Array.isArray(obj)) {
+        return 'array';
+      }
+      return 'object';
+    },
+    /**
+     * Creates and caches Date regexps.
+     * @param {String} key Key for cache
+     * @param {String} value Regexp string value
+     * @return {RegExp}
+     */
+    _getDateRegex: function(key, value) {
+      var reg = this.__cachedRegs && this.__cachedRegs[key];
+      if (!reg) {
+        if (!this.__cachedRegs) {
+          this.__cachedRegs = {};
+        }
+        reg = this.__cachedRegs[key] = new RegExp(value);
+      }
+      return reg;
+    },
+
+    /**
+     * Test given property for onle of the Date types.
+     *
+     * @param {String} str A string to test
+     * @return {String|undefined} Recodnized Date type or undefiend.
+     */
+    _testDateType: function(str) {
+      var keys = Object.keys(dateConstants);
+      for (var i = 0, len = keys.length; i < len; i++) {
+        var key = keys[i];
+        var reg = this._getDateRegex(key, dateConstants[key]);
+        if (reg.test(str)) {
+          switch (key) {
+            case 'dateOnlyPattern':
+              return 'date-only';
+            case 'timeOnlyPattern':
+              return 'time-only';
+            case 'dateTimeOnlyPattern':
+              return 'datetime-only';
+            case 'RFC3339DatetimePattern':
+              return 'datetime';
+            case 'RFC2616DatetimePattern':
+              return 'datetime';
+            default:
+              return;
+          }
+        }
+      }
+    },
+    /**
+     * Updates reference to a type definition on proerties and items.
+     *
+     * @param {Object} baseTypes List of base types.
+     * @return {Object} List of base types with updated references.
+     */
+    _updateTypesReferences: function(baseTypes, value) {
+      var type = this._detectObjectType(value);
+      if (type === 'array') {
+        value.forEach(function(key) {
+          this._updateTypesReferences(baseTypes, value[key]);
+        }, this);
+      } else if (type === 'object') {
+        if (value.type && typeof value.type === 'string') {
+          if (value.type in baseTypes) {
+            value.type = baseTypes[value.type];
+          }
+        }
+        Object.keys(value)
+        .forEach(function(key) {
+          this._updateTypesReferences(baseTypes, value[key]);
+        }, this);
+      }
+    }
+  });
+})();
+</script>
